@@ -1,6 +1,3 @@
-//Code from laboratory liparad :  https://www.liparad.uvsq.fr/
-
-
 #include "ooo_cmdline.h"
 #include <math.h>
 #include <algorithm>

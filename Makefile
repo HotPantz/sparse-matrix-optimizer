@@ -1,86 +1,97 @@
+# Makefile
 
 TASK := spmxv
 SRCDIRS := . utils
 SRCEXT := cpp
-SOURCES := $(wildcard $(addsuffix /*.${SRCEXT}, ${SRCDIRS}))
-OBJECTS := $(SOURCES:%.${SRCEXT}=%.o)
+SOURCES := $(wildcard $(addsuffix /*.$(SRCEXT), $(SRCDIRS)))
+OBJECTS := $(SOURCES:%.cpp=%.o)
 DEPENDENCIES := $(OBJECTS:%.o=%.d)
-EXECUTABLE := ${TASK}.exe
-DIRNAME := $(notdir ${CURDIR})
+DIRNAME := $(notdir $(CURDIR))
 
-# MAT_DIR needs to be set according to your local file placement
+# Matrices directory
 MAT_DIR := input-matrix
 
-CC ?= icx
-CXX ?= icpx
-COMPILER = ${CXX}
-ifeq (${CC}, icx)
-	FLAGS_OPENMP = -fiopenmp
-else ifeq (${CC}, scorep-icx)
-	FLAGS_OPENMP = -fiopenmp
-else
-	FLAGS_OPENMP = -fopenmp
-endif
-FLAGS = -g ${FLAGS_OPENMP} -march=native
-FLAGS_FAST = -O3
-FLAGS_DEBUG = -O0 -Wall -Wextra
-INCLUDES = $(addprefix -I, ${SRCDIRS})
+# Compilers
+GCC_COMPILER := gcc
+ICPX_COMPILER := icpx
 
-GROUP ?= X
+# GCC Flags
+GCC_FLAGS_O3 := -O3 -fno-omit-frame-pointer -march=native -lstdc++ -fopenmp
+GCC_FLAGS_Ofast := -Ofast -fno-omit-frame-pointer -march=native -lstdc++ -fopenmp
 
-MFORMAT ?= csr
+# ICPX Flags
+ICPX_FLAGS_O3 := -O3 -fno-omit-frame-pointer -march=native -lstdc++ -qopenmp
+ICPX_FLAGS_Fast := -Ofast -fno-omit-frame-pointer -march=native -lstdc++ -qopenmp
 
-N_THREADS ?= 72
+# Common flags
+FLAGS_OPENMP := -fopenmp
+INCLUDES := $(addprefix -I, $(SRCDIRS))
 
-# set default build target
-build: release
+# Executable names
+EXECUTABLE_GCC_O3 := $(TASK)-gcc-O3.exe
+EXECUTABLE_GCC_Ofast := $(TASK)-gcc-Ofast.exe
+EXECUTABLE_ICPX_O3 := $(TASK)-icpx-O3.exe
+EXECUTABLE_ICPX_Fast := $(TASK)-icpx-Ofast.exe
 
-# build for debugging
-debug: FLAGS += ${FLAGS_DEBUG}
-debug: ${EXECUTABLE}
+# Thread counts
+THREADS := 1 2 3 4 6
 
-# build for performance
-release: FLAGS += ${FLAGS_FAST}
-release: ${EXECUTABLE}
+.PHONY: all clean build-gcc-O3 build-gcc-Ofast build-icpx-O3 build-icpx-Ofast run all-runs
 
-likwid: LIKWID_FLAGS = -DLIKWID_PERFMON
-likwid: LDLIBS = -llikwid
-likwid: release
+all: build-gcc-O3 build-gcc-Ofast build-icpx-O3 build-icpx-Ofast
 
-${EXECUTABLE}: ${OBJECTS}
-	${COMPILER} ${FLAGS} -o $@ $^ ${LIKWID_FLAGS} ${LDLIBS}
+# GCC O3 Build
+build-gcc-O3: $(EXECUTABLE_GCC_O3)
 
-%.o: %.${SRCEXT}
-	${COMPILER} ${INCLUDES} -MMD -MP ${FLAGS} ${LIKWID_FLAGS} -c -o $@ $<
+$(EXECUTABLE_GCC_O3): $(OBJECTS)
+	$(GCC_COMPILER) $(GCC_FLAGS_O3) -o $@ $^ $(INCLUDES)
 
-run-small: REP ?= 100000
-run-small: release
-	OMP_NUM_THREADS=${N_THREADS} OMP_PROC_BIND=true OMP_PLACES=cores ./${EXECUTABLE} -t ${N_THREADS} -c -f ${MAT_DIR}/mat_dim_59319.txt -r ${REP} -m ${MFORMAT}
+# GCC Ofast Build
+build-gcc-Ofast: $(EXECUTABLE_GCC_Ofast)
 
-run-large: REP ?= 100000
-run-large: release
-	OMP_NUM_THREADS=${N_THREADS} OMP_PROC_BIND=true OMP_PLACES=cores ./${EXECUTABLE} -t ${N_THREADS} -c -f ${MAT_DIR}/mat_dim_493039.txt -r ${REP} -m ${MFORMAT}
+$(EXECUTABLE_GCC_Ofast): $(OBJECTS)
+	$(GCC_COMPILER) $(GCC_FLAGS_Ofast) -o $@ $^ $(INCLUDES)
 
-run-verylarge: REP ?= 100000
-run-verylarge: release
-	OMP_NUM_THREADS=${N_THREADS} OMP_PROC_BIND=true OMP_PLACES=cores ./${EXECUTABLE} -t ${N_THREADS} -c -f ${MAT_DIR}/mat_dim_986078.txt -r ${REP} -m ${MFORMAT}
+# ICPX O3 Build
+build-icpx-O3: $(EXECUTABLE_ICPX_O3)
 
-run-noL3: REP ?= 100000
-run-noL3: release
-	OMP_NUM_THREADS=${N_THREADS} OMP_PROC_BIND=true OMP_PLACES=cores ./${EXECUTABLE} -t ${N_THREADS} -c -f ${MAT_DIR}/mat_noL3.txt -r ${REP} -m ${MFORMAT}
+$(EXECUTABLE_ICPX_O3): $(OBJECTS)
+	$(ICPX_COMPILER) $(ICPX_FLAGS_O3) -o $@ $^ $(INCLUDES)
 
+# ICPX Fast Build
+build-icpx-Ofast: $(EXECUTABLE_ICPX_Fast)
 
-# prints out the usage of the command line feature
-help: build
-	./${EXECUTABLE} -h
+$(EXECUTABLE_ICPX_Fast): $(OBJECTS)
+	$(ICPX_COMPILER) $(ICPX_FLAGS_Fast) -o $@ $^ $(INCLUDES)
 
-archive: clean
-	find . -maxdepth 1 -type f -exec tar --transform 's|^|${DIRNAME}-group-${GROUP}/|g' -cvzf ${DIRNAME}-group-${GROUP}.tar.gz {} +
+# Compile source files
+%.o: %.cpp
+	$(GCC_COMPILER) -c $(GCC_FLAGS_O3) $(INCLUDES) -o $@ $<
 
-.PHONY: clean build debug release run-small run-large archive help
+# Run targets with specific thread counts
+define RUN_TEMPLATE
+run-gcc-O3-$(1):
+	OMP_PLACES=cores OMP_PROC_BIND=close ./$(EXECUTABLE_GCC_O3) -f $(MAT_DIR)/mat_dim_493039.txt -t $(1) -r 20000
+
+run-gcc-Ofast-$(1):
+	OMP_PLACES=cores OMP_PROC_BIND=close ./$(EXECUTABLE_GCC_Ofast) -f $(MAT_DIR)/mat_dim_493039.txt -t $(1) -r 20000
+
+run-icpx-O3-$(1):
+	OMP_PLACES=cores OMP_PROC_BIND=close ./$(EXECUTABLE_ICPX_O3) -f $(MAT_DIR)/mat_dim_493039.txt -t $(1) -r 20000
+
+run-icpx-Ofast-$(1):
+	OMP_PLACES=cores OMP_PROC_BIND=close ./$(EXECUTABLE_ICPX_Fast) -f $(MAT_DIR)/mat_dim_493039.txt -t $(1) -r 20000
+endef
+
+$(foreach thread,$(THREADS),$(eval $(call RUN_TEMPLATE,$(thread))))
+
+# Run all tests
+all-runs: $(foreach thread,$(THREADS), \
+	run-gcc-O3-$(thread) \
+	run-gcc-Ofast-$(thread) \
+	run-icpx-O3-$(thread) \
+	run-icpx-Ofast-$(thread)))
+
+# Clean build artifacts
 clean:
-	${RM} ${EXECUTABLE}
-	${RM} ${OBJECTS}
-	${RM} ${DEPENDENCIES}
-
--include ${DEPENDENCIES}
+	rm -f $(EXECUTABLE_GCC_O3) $(EXECUTABLE_GCC_Ofast) $(EXECUTABLE_ICPX_O3) $(EXECUTABLE_ICPX_Fast) $(OBJECTS) $(DEPENDENCIES)

@@ -1,5 +1,3 @@
-//Code from laboratory liparad :  https://www.liparad.uvsq.fr/
-
 // C header
 #include <stdio.h>
 #include <stdlib.h>

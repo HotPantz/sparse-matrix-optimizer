@@ -1,160 +1,91 @@
 #!/bin/bash
 
-# run_all.sh
-# Script pour compiler et profiler la Multiplication Matrice-Vecteur Sparse (SPMXV) en utilisant les compilateurs GCC et OneAPI ICPX.
+# Ensure MAQAO is installed
+if ! command -v maqao &> /dev/null
+then
+    echo "MAQAO could not be found. Please install MAQAO and update MAQAO_HOME."
+    exit 1
+fi
 
-# Quitter immédiatement si une commande échoue
-set -e
+# Define executables
+EXECUTABLES=("spmxv-gcc-O3.exe" "spmxv-gcc-Ofast.exe" "spmxv-icpx-O3.exe" "spmxv-icpx-Fast.exe")
 
-# Répertoires
-RESULTS_DIR="results"
-UTILS_DIR="utils"
+# Input parameters
+INPUT_FILE="input-matrix/mat_dim_493039.txt"
+NUM_REPEATS=20000
 
-# Créer le répertoire des résultats s'il n'existe pas
-mkdir -p "${RESULTS_DIR}"
+# Define thread counts for scalability tests
+THREADS=(1 2 3 4 6)
 
-# Détecter le nombre maximum de cœurs physiques
-MAX_PHYSICAL_CORES=$(lscpu | awk '/^Core\(s\) per socket:/ {cores_per_socket=$4} /^Socket\(s\):/ {print cores_per_socket * $2}')
-echo "Nombre maximum de cœurs physiques détectés : ${MAX_PHYSICAL_CORES}"
+# MAQAO profiling modes
+MODES=("standard" "stability" "scalability" "compare")
 
-# Définir les nombres de cœurs à tester selon le nombre maximum de cœurs physiques
-declare -a CORE_TESTS=()
+# Directory to store MAQAO results
+RESULTS_DIR="results/maqao_results"
+mkdir -p "$RESULTS_DIR"
 
-case "${MAX_PHYSICAL_CORES}" in
-    2)
-        CORE_TESTS=(1 2)
-        ;;
-    4)
-        CORE_TESTS=(1 2 3 4)
-        ;;
-    6)
-        CORE_TESTS=(1 2 3 4 6)
-        ;;
-    8)
-        CORE_TESTS=(1 2 4 8)
-        ;;
-    16)
-        CORE_TESTS=(1 2 4 8 16)
-        ;;
-    *)
-        echo "Nombre de cœurs physiques non supporté pour les tests de scalabilité."
-        exit 1
-        ;;
-esac
+# Function to run MAQAO profiling
+run_maqao() {
+    local exe=$1
+    local mode=$2
+    local threads=$3
 
-# Fonctions de compilation
-compile_code() {
-    local compiler=$1
-    local optimization=$2
-    local output_exe="spmxv_${compiler}_${optimization}.exe"
-
-    echo "Compilation avec ${compiler} ${optimization}..."
-
-    if [ "${compiler}" == "g++" ]; then
-        ${compiler} -fno-omit-frame-pointer ${optimization} -I "${UTILS_DIR}" -o "${RESULTS_DIR}/${output_exe}" main.cpp "${UTILS_DIR}"/*.cpp -fopenmp
-    elif [ "${compiler}" == "icpx" ]; then
-        ${compiler} -fno-omit-frame-pointer ${optimization} -I "${UTILS_DIR}" -o "${RESULTS_DIR}/${output_exe}" main.cpp "${UTILS_DIR}"/*.cpp -qopenmp
-    else
-        echo "Compilateur non supporté : ${compiler}"
-        return 1
-    fi
-
-    echo "Compilation réussie : ${output_exe}"
-}
-
-# Fonction de profilage avec MAQAO
-profile_code() {
-    local exe_path=$1
-    local profiler_result=$2
-    local maqao_mode=$3
-    local cores=$4
-
-    echo "Profilage de ${exe_path} avec MAQAO en mode ${maqao_mode} sur ${cores} cœur(s)..."
-
-    # Exécuter MAQAO avec le mode spécifié
-    case "${maqao_mode}" in
-        stability)
-            MAQAO_RUN_OPTIONS="--mode stability"
-            ;;
+    case $mode in
         standard)
-            MAQAO_RUN_OPTIONS="--mode standard"
+            MAQAO_CMD="maqao oneview -create-report=one"
+            ;;
+        stability)
+            MAQAO_CMD="maqao oneview -mode stability"
             ;;
         scalability)
-            MAQAO_RUN_OPTIONS="--mode scalability"
+            MAQAO_CMD="maqao oneview --with-scalability=strong"
+            ;;
+        compare)
+            MAQAO_CMD="maqao oneview --mode compare"
             ;;
         *)
-            echo "Mode MAQAO non supporté : ${maqao_mode}"
-            return 1
+            echo "Unknown MAQAO mode: $mode"
+            return
             ;;
     esac
 
-    # Définir le nombre de threads OpenMP
-    export OMP_NUM_THREADS=${cores}
+    local exe_name="${exe%.*}"
+    local result_subdir="$RESULTS_DIR/${exe_name}/$mode"
+    mkdir -p "$result_subdir"
 
-    # Exécuter MAQAO et rediriger la sortie
-    maqao ${MAQAO_RUN_OPTIONS} "${exe_path}" > "${profiler_result}" 2>&1
+    echo "Running $exe with mode: $mode"
 
-    echo "Profilage terminé : ${profiler_result}"
-}
+    # Set environment variables for OpenMP
+    export OMP_PLACES=cores
+    export OMP_PROC_BIND=close
 
-# Fonction pour exécuter toutes les mesures
-run_all() {
-    # Compilateurs et flags d'optimisation
-    declare -a compilers=("g++" "icpx")
-    declare -a optimizations=("-O3" "-Ofast")
-
-    for compiler in "${compilers[@]}"; do
-        for optimization in "${optimizations[@]}"; do
-            # Compiler le code
-            compile_code "${compiler}" "${optimization}"
-
-            # Définir le chemin de l'exécutable
-            exe_path="${RESULTS_DIR}/spmxv_${compiler}_${optimization}.exe"
-
-            # Vérifier si l'exécutable existe
-            if [ ! -f "${exe_path}" ]; then
-                echo "Exécutable introuvable : ${exe_path}"
-                continue
-            fi
-
-            # *** Mesure de stabilité ***
-            stability_result="${RESULTS_DIR}/spmxv_${compiler}_${optimization}_stability_cores${MAX_PHYSICAL_CORES}_maqao.log"
-            profile_code "${exe_path}" "${stability_result}" "stability" "${MAX_PHYSICAL_CORES}"
-
-            # *** Mesure standard ***
-            standard_result="${RESULTS_DIR}/spmxv_${compiler}_${optimization}_standard_cores${MAX_PHYSICAL_CORES}_maqao.log"
-            profile_code "${exe_path}" "${standard_result}" "standard" "${MAX_PHYSICAL_CORES}"
-
-            # *** Mesures d’extensibilité (scalabilité) ***
-            for cores in "${CORE_TESTS[@]}"; do
-                scalability_result="${RESULTS_DIR}/spmxv_${compiler}_${optimization}_scalability_cores${cores}_maqao.log"
-                profile_code "${exe_path}" "${scalability_result}" "scalability" "${cores}"
-            done
-
-            echo "-------------------------------------------"
+    if [ "$mode" == "scalability" ]; then
+        # For scalability, iterate over thread counts
+        for t in "${THREADS[@]}"; do
+            echo "  Threads: $t"
+            MAQAO_OUTPUT="$result_subdir/result_threads_${t}.html"
+            maqao oneview --create-report=one --output="$MAQAO_OUTPUT" -- ./"$exe" -f "$INPUT_FILE" -t "$t" -r "$NUM_REPEATS"
         done
-    done
-
-    echo "Toutes les compilations et les profilages MAQAO sont terminés. Vérifiez le dossier '${RESULTS_DIR}' pour les résultats."
+    elif [ "$mode" == "compare" ]; then
+        # Comparison across all executables
+        local compare_dir="$result_subdir"
+        mkdir -p "$compare_dir"
+        local compare_output="$compare_dir/compare.html"
+        echo "  Running comparison for all executables"
+        maqao oneview --mode compare --output="$compare_output" -- "${EXECUTABLES[@]/#./}" -f "$INPUT_FILE" -t "${THREADS[-1]}" -r "$NUM_REPEATS"
+    else
+        # For other modes, use maximum threads (6)
+        local max_threads=6
+        MAQAO_OUTPUT="$result_subdir/result.html"
+        maqao oneview --create-report=one --output="$MAQAO_OUTPUT" -- ./"$exe" -f "$INPUT_FILE" -t "$max_threads" -r "$NUM_REPEATS"
+    fi
 }
 
-# Vérifier si MAQAO est installé
-if ! command -v maqao &> /dev/null; then
-    echo "MAQAO n'a pas été trouvé. Veuillez installer MAQAO et vous assurer qu'il est dans votre PATH."
-    exit 1
-fi
+# Iterate over each executable and run all profiling modes
+for exe in "${EXECUTABLES[@]}"; do
+    for mode in "${MODES[@]}"; do
+        run_maqao "$exe" "$mode"
+    done
+done
 
-# Vérifier si g++ est installé
-if ! command -v g++ &> /dev/null; then
-    echo "g++ n'a pas été trouvé. Veuillez installer g++ et vous assurer qu'il est dans votre PATH."
-    exit 1
-fi
-
-# Vérifier si icpx est installé
-if ! command -v icpx &> /dev/null; then
-    echo "icpx n'a pas été trouvé. Veuillez installer Intel OneAPI ICPX et vous assurer qu'il est dans votre PATH."
-    exit 1
-fi
-
-# Exécuter le processus complet
-run_all
+echo "All profiling runs completed. Results are stored in the '$RESULTS_DIR' directory."
